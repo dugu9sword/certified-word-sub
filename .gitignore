@@ -1,9 +1,21 @@
+**/.ipynb**/**
+.vscode/
+*.ipynb
+
+agnews*/**
+imdb*/**
+snli*/**
+cache*/**
+outdir*/**
+result/**
+
 #Big data files
 data/aclImdb
 data/counter-fitted-vectors.txt
 data/glove
 data/lm_scores
 data/snli
+data/agnews
 
 # LM
 windweller-l2w

@@ -8,17 +8,17 @@ unzip jia2019_cert_lm_scores.zip
 rm jia2019_cert_lm_scores.zip
 
 # GloVe
-mkdir glove
-cd glove
-wget http://nlp.stanford.edu/data/glove.840B.300d.zip
-unzip glove.840B.300d.zip
-rm glove.840B.300d.zip
-cd -
+# mkdir glove
+# cd glove
+# wget http://nlp.stanford.edu/data/glove.840B.300d.zip
+# unzip glove.840B.300d.zip
+# rm glove.840B.300d.zip
+# cd -
 
 # Counterfitted vectors
-wget https://github.com/nmrksic/counter-fitting/raw/master/word_vectors/counter-fitted-vectors.txt.zip
-unzip counter-fitted-vectors.txt.zip
-rm counter-fitted-vectors.txt.zip
+# wget https://github.com/nmrksic/counter-fitting/raw/master/word_vectors/counter-fitted-vectors.txt.zip
+# unzip counter-fitted-vectors.txt.zip
+# rm counter-fitted-vectors.txt.zip
 
 # IMDB
 wget http://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz
