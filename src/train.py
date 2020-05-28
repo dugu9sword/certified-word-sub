@@ -255,6 +255,7 @@ def test(task_class, model, name, dataset, device, show_certified=False, batch_s
         results['num_cert_correct'] / results['num_total']
     out_str = "  {name} loss = {loss:.2f}; accuracy: {num_correct}/{num_total} = {clean_acc:.2f}, certified {num_cert_correct}/{num_total} = {cert_acc:.2f}".format(
         **results)
+    print(out_str)
     if aug_dataset:
         results['aug_acc'] = 100 * \
             results['aug_correct'] / results['aug_total']
@@ -299,7 +300,7 @@ def parse_args():
     parser.add_argument(
         '--glove', '-g', choices=vocabulary.GLOVE_CONFIGS, default='840B.300d')
     # Adversary
-    parser.add_argument('--adversary', '-a', choices=['exhaustive', 'greedy', 'genetic'],
+    parser.add_argument('--adversary', '-a', choices=['exhaustive', 'greedy', 'genetic', 'pwws'],
                         default=None, help='Which adversary to test on')
     parser.add_argument('--adv-num-epochs', type=int, default=40)
     parser.add_argument('--adv-num-tries', type=int, default=2)
@@ -349,6 +350,7 @@ def parse_args():
     parser.add_argument('--imdb-lm-file', type=str,
                         default=text_classification.LM_FILE)
     parser.add_argument('--snli-lm-file', type=str, default=entailment.LM_FILE)
+    parser.add_argument('--agnews-lm-file', type=str, default="data/lm_scores/agnews.txt")
     parser.add_argument('--prepend-null', action='store_true',
                         help='If true add UNK token to sequences')
     parser.add_argument('--normalize-word-vecs', action='store_true',
@@ -419,6 +421,8 @@ def main():
         elif OPTS.adversary == 'genetic':
             adversary = task_class.GeneticAdversary(attack_surface, num_iters=OPTS.adv_num_epochs,
                                                     pop_size=OPTS.adv_pop_size)
+        elif OPTS.adversary == 'pwws':
+            adversary = task_class.PWWSAdversary(attack_surface)
         dev_results = test(task_class, model, 'Dev', dev_data, device,
                            adversary=adversary, batch_size=OPTS.batch_size)
         results = {
@@ -437,6 +441,8 @@ def main():
         elif OPTS.adversary == 'genetic':
             adversary = task_class.GeneticAdversary(attack_surface, num_iters=OPTS.adv_num_epochs,
                                                     pop_size=OPTS.adv_pop_size)
+        elif OPTS.adversary == 'pwws':
+            adversary = task_class.PWWSAdversary(attack_surface)
         test(task_class, model, 'Dev', dev_data, device,
              adversary=adversary, batch_size=OPTS.batch_size)
 

@@ -20,6 +20,8 @@ import attacks
 import data_util
 import ibp
 import vocabulary
+import shared
+import copy
 
 SNLI_DIR = 'data/snli'
 LM_FILE = 'data/lm_scores/snli_all.txt'
@@ -57,6 +59,7 @@ class EntailmentLabels(Enum):
     contradiction = 0
     neutral = 1
     entailment = 2
+
 
 
 class BOWModel(AdversarialModel):
@@ -1006,3 +1009,106 @@ class GeneticAdversary(Adversary):
             cnt = np.array(is_correct)
             print(">>> Adv accuracy", round(100 * cnt.sum() / cnt.shape[0], 2))
         return is_correct, adv_exs
+
+    
+class PWWSAdversary(Adversary):
+    def __init__(self, attack_surface):
+        super(PWWSAdversary, self).__init__(attack_surface)
+    
+    def run(self, model, dataset, device, opts=None):
+        raw_correct = []
+        is_correct = []
+        adv_exs = []
+        for x, y in tqdm(dataset.raw_data[1:]):
+            if torch.argmax(query([x], model, dataset, device)[0]).item() != y.value:
+                print('Skip sentence since it is wrong')
+                raw_correct.append(0)
+                is_correct.append(0)
+                continue
+            
+            words = x[1].split()
+            swaps = self.attack_surface.get_swaps([ele.lower() for ele in words])
+            
+#             import pdb; pdb.set_trace()
+            
+            _sents = []
+            _offsets = {}
+            for sid, word in enumerate(words):
+                if len(swaps[sid]) == 0:
+                    continue
+                tmp_sents = []
+                # first element is the raw sentence
+                tmp_sents.append(" ".join(words))
+                # second element is the UNK sentence
+                tmp_words = copy.copy(words)
+                tmp_words[sid] = '<UNK>'
+                tmp_sents.append(" ".join(tmp_words))
+                # starting from the third one are modified sentences
+                for nbr in swaps[sid]:
+                    tmp_words = copy.copy(words)
+                    tmp_words[sid] = nbr
+                    tmp_sents.append(" ".join(tmp_words))
+
+                _offsets[sid] = (len(_sents), len(tmp_sents))
+                _sents.extend(tmp_sents)
+            
+            if len(_sents) == 0:
+                is_correct.append(1)
+                raw_correct.append(1)
+                continue 
+                
+            _probs = query(list(zip([x[0]] * len(_sents), _sents)), model, dataset, device)
+                
+            repl_dct = {}  # {idx: "the replaced word"}
+            pwws_dct = {}
+            for sid, word in enumerate(words):
+                if len(swaps[sid]) == 0:
+                    continue
+                _start, _num = _offsets[sid]
+                probs = np.array(_probs[_start:_start + _num])
+                true_probs = probs[:, y.value]
+                raw_prob = true_probs[0]
+                oov_prob = true_probs[1]
+                other_probs = true_probs[2:]
+                repl_dct[sid] = swaps[sid][np.argmin(other_probs)]
+                pwws_dct[sid] = np.max(raw_prob - other_probs) * np.exp(raw_prob - oov_prob)
+    
+            max_change_num = len(list(filter(lambda xxx: len(xxx) != 0, swaps)))
+            
+        
+            sorted_pwws = sorted(pwws_dct.items(), key=lambda x: x[1], reverse=True)
+            final_words = copy.copy(words)
+            successful = False
+            for i in range(max_change_num):
+                sid = sorted_pwws[i][0]
+                final_words[sid] = repl_dct[sid]
+                pro = query([(x[0], " ".join(final_words))], model, dataset, device)[0]
+#                 print(f"replace {words[sid]} with {repl_dct[sid]}: {pro}")
+#                 print(" ".join(final_words))
+                if torch.argmax(pro).item() != y.value:
+                    successful = True
+                    break
+
+            adv_exs.append(final_words)
+            is_correct.append(0 if successful else 1)
+            raw_correct.append(1)
+                
+            raw_cnt = np.array(raw_correct)
+            cnt = np.array(is_correct)
+            print(">>> Clean accuracy", round(100 * raw_cnt.sum() / raw_cnt.shape[0], 2))
+            print(">>> Adv accuracy", round(100 * cnt.sum() / cnt.shape[0], 2))
+        return is_correct, adv_exs
+
+def query(sents, model, dataset, device):
+    cur_dataset = EntailmentDataset.from_raw_data(
+                zip(sents, [EntailmentLabels.contradiction] * len(sents)), dataset.vocab, 
+                prepend_null=shared.opts.prepend_null)
+    _logits = []
+    with torch.no_grad():
+        for data in cur_dataset.get_loader(63):
+            batch = data_util.dict_batch_to_device(data, device)
+            logits = model.forward(batch, compute_bounds=False)
+            _logits.extend(logits.tolist())
+    _logits = torch.tensor(_logits)
+    _probs = torch.nn.functional.softmax(_logits, dim=1)
+    return _probs

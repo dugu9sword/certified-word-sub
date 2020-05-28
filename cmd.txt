@@ -1,13 +1,20 @@
 CUDA_VISIBLE_DEVICES=0
 --adversary=genetic
 
+python src/train.py classification cnn imdb_cnn_vanilla -d 100 --pool mean -T 10 --dropout-prob 0.2 -b 32 weight-decay 0.0 --save-best-only --unfreeze-wordvec --no-relu-wordvec
+CUDA_VISIBLE_DEVICES=0 python src/train.py classification cnn result/imdb_cnn_pwws -L imdb_cnn_vanilla --load-ckpt 5 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 1000 --unfreeze-wordvec --no-relu-wordvec -a pwws --data-cache-dir cache-imdb-1000 --adv-only
+
 # genetic
 python src/train.py classification cnn outdir -L imdb_cnn --load-ckpt 57 -d 100 --pool mean -T 0 -b 1 --data-cache-dir cache_imdb --downsample-to 1000 -a genetic --use-lm 
 
 # evaluation
-python src/train.py classification bow result/imdb_bow -L imdb_bow --load-ckpt 56 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 1000
-python src/train.py classification cnn result/imdb_cnn -L imdb_cnn --load-ckpt 57 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 1000
-python src/train.py classification lstm result/imdb_lstm -L imdb_lstm --load-ckpt 22 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 200
+python src/train.py classification bow result/imdb_bow -L imdb_bow --load-ckpt 56 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 1000 --data-cache-dir cache-imdb-1000
+python src/train.py classification cnn result/imdb_cnn -L imdb_cnn --load-ckpt 57 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 1000 --data-cache-dir cache-imdb-1000
+
+python src/train.py classification bow result/agnews_bow -L agnews_bow --load-ckpt 59 -d 100 --pool mean -T 0 -b 32 --test --downsample-to 1000 --data-cache-dir cache-agnews-1000-no --use-agnews-data
+python src/train.py classification cnn result/agnews_cnn -L agnews_cnn --load-ckpt 39 -d 100 --pool mean -T 0 -b 32 --test --downsample-to 1000 --data-cache-dir cache-agnews-1000-no --use-agnews-data
+
+python src/train.py classification lstm result/imdb_lstm -L imdb_lstm --load-ckpt 22 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 200 
 
 python src/train.py entailment bow outdir -L snli_bow --load-ckpt 69 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 1000 --data-cache-dir cache_snli
 python src/train.py entailment decomp-attn outdir --num-layers 2 --prepend-null -L snli_att --load-ckpt 197 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 1000 --data-cache-dir cache_snli
@@ -17,3 +24,5 @@ python src/train.py entailment decomp-attn outdir --num-layers 2 --prepend-null 
 python src/train.py classification cnn agnews_cnn -d 100 --pool mean -T 60 --full-train-epochs 20 -c 0.8 --dropout-prob 0.2 -b 32 --save-best-only --use-agnews-data --data-cache-dir cache_agnews
 
 python src/train.py classification cnn result/agnews_cnn -L agnews_cnn --load-ckpt 39 -d 100 --pool mean -T 0 -b 1 --test --use-agnews-data --downsample-to 1000 --test -a genetic 
+
+python src/train.py classification cnn outdir -L imdb_cnn_vanilla --load-ckpt 9 -d 100 --pool mean -T 0 -b 1 --test --downsample-to 1000 --test --data-cache-dir cache-imdb-1000 --no-relu-wordvec --unfreeze-wordvec -a pwws 

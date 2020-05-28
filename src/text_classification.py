@@ -20,7 +20,7 @@ import data_util
 import ibp
 import vocabulary
 import shared
-
+import copy
 
 LOSS_FUNC = nn.BCEWithLogitsLoss()
 IMDB_DIR = 'data/aclImdb'
@@ -104,7 +104,7 @@ class BOWModel(AdversarialModel):
         if num_labels > 1:
             self.log_softmax = ibp.LogSoftmax(dim=1)
         else:
-            self.log_sogtmax = None
+            self.log_softmax = None
 
 
     def forward(self, batch, compute_bounds=True, cert_eps=1.0):
@@ -192,7 +192,7 @@ class CNNModel(AdversarialModel):
         if num_labels > 1:
             self.log_softmax = ibp.LogSoftmax(dim=1)
         else:
-            self.log_sogtmax = None
+            self.log_softmax = None
 
     def forward(self, batch, compute_bounds=True, cert_eps=1.0):
         """
@@ -275,7 +275,7 @@ class LSTMModel(AdversarialModel):
         if num_labels > 1:
             self.log_softmax = ibp.LogSoftmax(dim=1)
         else:
-            self.log_sogtmax = None
+            self.log_softmax = None
 
 
     def forward(self, batch, compute_bounds=True, cert_eps=1.0, analysis_mode=False):
@@ -462,49 +462,78 @@ class GreedyAdversary(Adversary):
 
     def run(self, model, dataset, device, opts=None):
         is_correct = []
+        raw_correct= []
         adv_exs = []
         for x, y in tqdm(dataset.raw_data):
             # First query the example itself
-            orig_pred, bounds = model.query(TextClassificationDataset.from_raw_data(
-                [(x, y)], dataset.vocab, self.attack_surface), device, return_bounds=True)
-            orig_pred, (orig_lb, orig_ub) = orig_pred[0], bounds[0]
-            cert_correct = (orig_lb * (2 * y - 1) >
-                            0) and (orig_ub * (2 * y - 1) > 0)
-            print('Logit bounds: %.6f <= %.6f <= %.6f, cert_correct=%s' % (
-                orig_lb, orig_pred, orig_ub, cert_correct))
-            if orig_pred * (2 * y - 1) <= 0:
-                print('ORIGINAL PREDICTION WAS WRONG')
-                is_correct.append(0)
-                adv_exs.append(x)
-                continue
+            if shared.opts.use_agnews_data:
+                orig_pred, orig_gold = model.query((x, y), dataset.vocab, device, return_bounds=True, attack_surface=self.attack_surface)
+                model_correct, model_cert_correct = compute_is_correct(orig_pred, orig_gold)
+                cert_correct = model_cert_correct.sum().item()
+                value_margins, worst_case_margins = get_margins(
+                    orig_pred, orig_gold)
+                print('Margin: %.6f, lower bound: %.6f, cert_correct=%s' %
+                      (value_margins[0].item(), worst_case_margins[0].item(),
+                       cert_correct))
+                if model_correct.sum().item() <= 0:
+                    print('ORIGINAL PREDICTION WAS WRONG')
+                    raw_correct.append(0)
+                    is_correct.append(0)
+                    adv_exs.append(x)
+                    continue
+            else:
+                orig_pred, (orig_lb, orig_ub) = model.query(
+                    x, dataset.vocab, device, return_bounds=True,
+                    attack_surface=self.attack_surface)
+                cert_correct = (orig_lb * (2 * y - 1) >
+                                0) and (orig_ub * (2 * y - 1) > 0)
+                print('Logit bounds: %.6f <= %.6f <= %.6f, cert_correct=%s' % (
+                    orig_lb, orig_pred, orig_ub, cert_correct))
+                if orig_pred * (2 * y - 1) <= 0:
+                    print('ORIGINAL PREDICTION WAS WRONG')
+                    raw_correct.append(0)
+                    is_correct.append(0)
+                    adv_exs.append(x)
+                    continue
+
             # Now run adversarial search
             words = x.split()
             swaps = self.attack_surface.get_swaps(words)
             choices = [[w] + cur_swaps for w, cur_swaps in zip(words, swaps)]
+            max_can_change = len(list(filter(lambda xxx: len(xxx) != 0, swaps)))
+            max_change_num = min(int(0.15 * len(words)), max_can_change)
+            max_change_num = 1
+            
             found = False
             for try_idx in range(self.num_tries):
                 cur_words = list(words)
                 for epoch in range(self.num_epochs):
                     word_idxs = list(range(len(choices)))
                     random.shuffle(word_idxs)
-                    for i in word_idxs:
+                    for i in word_idxs[:max_change_num]:
                         cur_raw = []
                         for w_new in choices[i]:
-                            cur_raw.append(
-                                (' '.join(cur_words[:i] + [w_new] + cur_words[i+1:]), y))
-                        cur_dataset = TextClassificationDataset.from_raw_data(
-                            cur_raw, dataset.vocab)
-                        preds = model.query(cur_dataset, device)
-                        margins = [p * (2 * y - 1) for p in preds]
-                        best_idx = min(enumerate(margins),
-                                       key=lambda x: x[1])[0]
+                            cur_raw.append(' '.join(cur_words[:i] + [w_new] + cur_words[i+1:]))
+                        probs = query(cur_raw, model, dataset, device)
+                        best_idx = torch.argmin(probs[:, y])
+#                         import pdb; pdb.set_trace()
+                        
+#                         cur_dataset = TextClassificationDataset.from_raw_data(
+#                             cur_raw, dataset.vocab)
+#                         preds = model.query(cur_dataset, dataset.vocab, device)
+#                         margins = [p * (2 * y - 1) for p in preds]
+#                         best_idx = min(enumerate(margins),
+#                                        key=lambda x: x[1])[0]
                         cur_words[i] = choices[i][best_idx]
-                        if margins[best_idx] < self.margin_goal:
+#                         if margins[best_idx] < self.margin_goal:
+                        if torch.argmax(probs[best_idx]).item() != y:
                             found = True
                             is_correct.append(0)
+                            raw_correct.append(1)
                             adv_exs.append([' '.join(cur_words)])
-                            print('ADVERSARY SUCCESS on ("%s", %d): Found "%s" with margin %.2f' % (
-                                x, y, adv_exs[-1], margins[best_idx]))
+#                             print('ADVERSARY SUCCESS on ("%s", %d): Found "%s" with margin %.2f' % (
+#                                 x, y, adv_exs[-1], margins[best_idx]))
+                            print('adversary success')
                             if cert_correct:
                                 print('^^ CERT CORRECT THOUGH')
                             break
@@ -514,8 +543,126 @@ class GreedyAdversary(Adversary):
                     break
             else:
                 is_correct.append(1)
+                raw_correct.append(1)
                 adv_exs.append([])
                 print('ADVERSARY FAILURE on ("%s", %d)' % (x, y))
+            raw_cnt = np.array(raw_correct)
+            cnt = np.array(is_correct)
+            print(">>> Clean accuracy", round(100 * raw_cnt.sum() / raw_cnt.shape[0], 2))
+            print(">>> Adv accuracy", round(100 * cnt.sum() / cnt.shape[0], 2))
+                
+            
+        return is_correct, adv_exs
+    
+
+def query(sents, model, dataset, device):
+    if hasattr(dataset, "vocab"):
+        cur_dataset = TextClassificationDataset.from_raw_data(
+                zip(sents, [0] * len(sents)), dataset.vocab)
+    else:
+        cur_dataset = TextClassificationDataset.from_raw_data(
+                zip(sents, [0] * len(sents)), dataset)
+    _logits = []
+    with torch.no_grad():
+        for data in cur_dataset.get_loader(63):
+            batch = data_util.dict_batch_to_device(data, device)
+            logits = model.forward(batch, compute_bounds=False)
+            _logits.extend(logits.tolist())
+    _logits = torch.tensor(_logits)
+    if shared.opts.use_agnews_data:
+        _probs = torch.nn.functional.softmax(_logits, dim=1)
+    else:
+        _probs = torch.sigmoid(_logits)
+        _probs_0 = 1 - _probs
+        _probs = torch.cat([_probs_0, _probs], dim=1)
+    return _probs
+
+class PWWSAdversary(Adversary):
+    def __init__(self, attack_surface):
+        super(PWWSAdversary, self).__init__(attack_surface)
+    
+    def run(self, model, dataset, device, opts=None):
+        raw_correct = []
+        is_correct = []
+        adv_exs = []
+        for x, y in tqdm(dataset.raw_data[1:]):
+            if torch.argmax(query([x], model, dataset, device)[0]).item() != y:
+                print('Skip sentence since it is wrong')
+                raw_correct.append(0)
+                is_correct.append(0)
+                continue
+            
+            words = x.split()
+            swaps = self.attack_surface.get_swaps([ele.lower() for ele in words])
+            
+#             import pdb; pdb.set_trace()
+            
+            _sents = []
+            _offsets = {}
+            for sid, word in enumerate(words):
+                if len(swaps[sid]) == 0:
+                    continue
+                tmp_sents = []
+                # first element is the raw sentence
+                tmp_sents.append(" ".join(words))
+                # second element is the UNK sentence
+                tmp_words = copy.copy(words)
+                tmp_words[sid] = '<UNK>'
+                tmp_sents.append(" ".join(tmp_words))
+                # starting from the third one are modified sentences
+                for nbr in swaps[sid]:
+                    tmp_words = copy.copy(words)
+                    tmp_words[sid] = nbr
+                    tmp_sents.append(" ".join(tmp_words))
+
+                _offsets[sid] = (len(_sents), len(tmp_sents))
+                _sents.extend(tmp_sents)
+            
+            if len(_sents) == 0:
+                is_correct.append(1)
+                raw_correct.append(1)
+                continue 
+                
+            _probs = query(_sents, model, dataset, device)
+                
+            repl_dct = {}  # {idx: "the replaced word"}
+            pwws_dct = {}
+            for sid, word in enumerate(words):
+                if len(swaps[sid]) == 0:
+                    continue
+                _start, _num = _offsets[sid]
+                probs = np.array(_probs[_start:_start + _num])
+                true_probs = probs[:, y]
+                raw_prob = true_probs[0]
+                oov_prob = true_probs[1]
+                other_probs = true_probs[2:]
+                repl_dct[sid] = swaps[sid][np.argmin(other_probs)]
+                pwws_dct[sid] = np.max(raw_prob - other_probs) * np.exp(raw_prob - oov_prob)
+    
+            max_change_num = len(list(filter(lambda xxx: len(xxx) != 0, swaps)))
+            
+        
+            sorted_pwws = sorted(pwws_dct.items(), key=lambda x: x[1], reverse=True)
+            final_words = copy.copy(words)
+            successful = False
+            for i in range(max_change_num):
+                sid = sorted_pwws[i][0]
+                final_words[sid] = repl_dct[sid]
+                pro = query([" ".join(final_words)], model, dataset, device)[0]
+#                 print(f"replace {words[sid]} with {repl_dct[sid]}: {pro}")
+#                 print(" ".join(final_words))
+                if torch.argmax(pro).item() != y:
+                    successful = True
+                    break
+
+            adv_exs.append(final_words)
+            is_correct.append(0 if successful else 1)
+            raw_correct.append(1)
+                
+            raw_cnt = np.array(raw_correct)
+            cnt = np.array(is_correct)
+            print(">>> Clean accuracy", round(100 * raw_cnt.sum() / raw_cnt.shape[0], 2))
+            print(">>> Adv accuracy", round(100 * cnt.sum() / cnt.shape[0], 2))
         return is_correct, adv_exs
 
 
@@ -530,7 +677,7 @@ class GeneticAdversary(Adversary):
 
     def perturb(self, words, choices, model, y, vocab, device):
         if all(len(c) == 1 for c in choices):
-            return words
+            return words, None
         good_idxs = [i for i, c in enumerate(choices) if len(c) > 1]
         idx = random.sample(good_idxs, 1)[0]
         x_list = [' '.join(words[:idx] + [w_new] + words[idx+1:])
@@ -542,7 +689,10 @@ class GeneticAdversary(Adversary):
                 margin, _ = get_margins(model_output, gold_labels)
                 margins.append(margin.item())
         else:
-            preds = [model.query(x, vocab, device) for x in x_list]
+            probs = query(x_list, model, vocab, device)
+            preds = (- (1 / probs[:, 1] - 1).log()).tolist()
+#             import pdb; pdb.set_trace()
+#             preds = [model.query(x, vocab, device) for x in x_list]
             margins = [p * (2 * y - 1) for p in preds]
         best_idx = min(enumerate(margins), key=lambda x: x[1])[0]
         cur_words = list(words)
@@ -591,6 +741,12 @@ class GeneticAdversary(Adversary):
             found = False
             population = [self.perturb(words, choices, model, y, dataset.vocab, device)
                           for i in range(self.pop_size)]
+            if population[0][1] is None:
+                print('NO REPLACEMENT FOUND')
+                raw_correct.append(1)
+                is_correct.append(1)
+                adv_exs.append(x)
+                continue
             for g in range(self.num_iters):
                 best_idx = min(enumerate(population), key=lambda x: x[1][1])[0]
                 print('Iteration %d: %.6f' % (g, population[best_idx][1]))
@@ -685,8 +841,12 @@ def load_datasets(device, opts):
             attack_surface = ToyClassificationAttackSurface(
                 ToyClassificationDataset.VOCAB_LIST)
         elif opts.use_lm:
-            attack_surface = attacks.LMConstrainedAttackSurface.from_files(
-                opts.neighbor_file, opts.imdb_lm_file)
+            if shared.opts.use_agnews_data:
+                attack_surface = attacks.LMConstrainedAttackSurface.from_files(
+                    opts.neighbor_file, opts.agnews_lm_file)
+            else:
+                attack_surface = attacks.LMConstrainedAttackSurface.from_files(
+                    opts.neighbor_file, opts.imdb_lm_file)
         else:
             attack_surface = attacks.WordSubstitutionAttackSurface.from_file(
                 opts.neighbor_file)
@@ -889,9 +1049,14 @@ class TextClassificationDataset(data_util.ProcessedDataset):
             word_idxs = [vocab.get_index(w) for w in words]
             x_torch = torch.tensor(word_idxs).view(1, -1, 1)  # (1, T, d)
             if attack_surface:
-                choices_word_idxs = [
-                    torch.tensor([vocab.get_index(c) for c in c_list], dtype=torch.long) for c_list in choices
-                ]
+                if shared.opts.use_agnews_data:
+                    choices_word_idxs =  [
+                        torch.tensor(list(filter(lambda x: x!=0, [vocab.get_index(c) for c in c_list])), dtype=torch.long) for c_list in choices
+                    ]
+                else:
+                    choices_word_idxs = [
+                        torch.tensor([vocab.get_index(c) for c in c_list], dtype=torch.long) for c_list in choices
+                    ]
                 if any(0 in c.view(-1).tolist() for c in choices_word_idxs):
                     raise ValueError("UNK tokens found")
                 choices_torch = pad_sequence(choices_word_idxs, batch_first=True).unsqueeze(
@@ -1015,9 +1180,9 @@ class AGNEWSDataset(TextClassificationDataset):
         with open(f"{agnews_dir}/{split}.tsv", "r") as data_file:
             # without the quoting arg, errors will occur with line having quoting characters "/'
             df = pandas.read_csv(data_file, sep='\t', quoting=csv.QUOTE_NONE)
-            for rid in range(1, df.shape[0]):
+            for rid in range(0, df.shape[0]):
                 sent = df.iloc[rid]['sentence']
-                sent = sent.lower()
+#                 sent = sent.lower()
                 label = df.iloc[rid]['label']
                 data.append((sent, label))
         return data

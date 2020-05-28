@@ -62,11 +62,13 @@ class LMConstrainedAttackSurface(AttackSurface):
         swaps = []
         words = [word.lower() for word in words]
         s = ' '.join(words)
+#         import pdb; pdb.set_trace()
         if s not in self.lm_scores:
             raise KeyError('Unrecognized sentence "%s"' % s)
         for i in range(len(words)):
             if i in self.lm_scores[s]:
                 cur_swaps = []
+#                 import pdb; pdb.set_trace()
                 orig_score = self.lm_scores[s][i][words[i]]
                 for swap, score in self.lm_scores[s][i].items():
                     if swap == words[i]:
